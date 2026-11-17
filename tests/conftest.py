@@ -17,8 +17,14 @@ from mt.ipc.client import Client
 
 @pytest.fixture(autouse=True)
 def _local_only_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Движок в тестах не трогает сеть: без DHT/LSD, слушает только loopback."""
+    """Движок в тестах не трогает сеть: без DHT/LSD, слушает только loopback.
+
+    Переменные окружения доносят то же до демонов-подпроцессов; автозапуск
+    ОС выключен, чтобы тесты не трогали launchd/systemd пользователя.
+    """
     monkeypatch.setattr(engine_mod, "LOCAL_ONLY_DEFAULT", True)
+    monkeypatch.setenv("MT_LOCAL_ONLY", "1")
+    monkeypatch.setenv("MT_DISABLE_AUTOSTART", "1")
 
 
 @pytest.fixture

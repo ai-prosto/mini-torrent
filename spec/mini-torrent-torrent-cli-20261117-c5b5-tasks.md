@@ -34,20 +34,20 @@ Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition
 
 
 ### TASK-003: Жизненный цикл демона: самозапуск, автозапуск ОС, возобновление
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-07, BEH-08, BEH-09, BEH-10, BEH-11, BEH-20 (DT-03, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-03
 **Depends on:** [TASK-002]
 
 **Checklist:**
-- [ ] реализовать BEH-07: Демон живёт после закрытия терминала клиента
-- [ ] реализовать BEH-08: Демон поднимается сам при первой команде `mt add`
-- [ ] реализовать BEH-09: После kill демона незавершённые закачки возобновляются сами
-- [ ] реализовать BEH-10: После перезагрузки машины закачки возобновляются без команды
-- [ ] реализовать BEH-11: Процент после возобновления не ниже, чем был до остановки
-- [ ] реализовать BEH-20: Демон переживает отключение ssh-сессии на Linux
-- [ ] проверка группы: tests/test_daemon_lifecycle.py::test_daemon_survives_client_terminal_close (kind: pytest), tests/test_daemon_lifecycle.py::test_daemon_autospawn_on_first_add (kind: pytest), tests/test_daemon_lifecycle.py::test_resume_after_kill_without_user_command (kind: pytest), docs/manual/reboot-resume.md (kind: manual), tests/test_daemon_lifecycle.py::test_progress_not_lower_after_resume (kind: pytest), docs/manual/ssh-detach.md (kind: manual) зелёные на BEH-07, BEH-08, BEH-09, BEH-10, BEH-11, BEH-20
+- [x] реализовать BEH-07: Демон живёт после закрытия терминала клиента
+- [x] реализовать BEH-08: Демон поднимается сам при первой команде `mt add`
+- [x] реализовать BEH-09: После kill демона незавершённые закачки возобновляются сами
+- [x] реализовать BEH-10: После перезагрузки машины закачки возобновляются без команды
+- [x] реализовать BEH-11: Процент после возобновления не ниже, чем был до остановки
+- [x] реализовать BEH-20: Демон переживает отключение ssh-сессии на Linux
+- [x] проверка группы: tests/test_daemon_lifecycle.py::test_daemon_survives_client_terminal_close (kind: pytest), tests/test_daemon_lifecycle.py::test_daemon_autospawn_on_first_add (kind: pytest), tests/test_daemon_lifecycle.py::test_resume_after_kill_without_user_command (kind: pytest), docs/manual/reboot-resume.md (kind: manual), tests/test_daemon_lifecycle.py::test_progress_not_lower_after_resume (kind: pytest), docs/manual/ssh-detach.md (kind: manual) зелёные на BEH-07, BEH-08, BEH-09, BEH-10, BEH-11, BEH-20
 
 
 

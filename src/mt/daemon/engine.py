@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,8 +20,9 @@ import libtorrent as lt
 
 from mt import paths
 
-# Тесты подменяют на True: движок без DHT/LSD, слушает только loopback.
-LOCAL_ONLY_DEFAULT = False
+# Тесты подменяют на True (или через MT_LOCAL_ONLY=1 для демонов-подпроцессов):
+# движок без DHT/LSD, слушает только loopback.
+LOCAL_ONLY_DEFAULT = os.environ.get("MT_LOCAL_ONLY", "") == "1"
 
 
 class EngineError(Exception):
@@ -52,6 +54,7 @@ class TorrentStats:
     num_peers: int
     has_metadata: bool
     is_complete: bool
+    is_checking: bool  # идёт проверка кусков на диске (после возобновления)
     paused: bool
     files: list[str] = field(default_factory=list)
 
@@ -173,6 +176,16 @@ class Engine:
                 # метаданные магнита приехали из роя — сохраняем копию (D-06)
                 with contextlib.suppress(OSError, RuntimeError):
                     self._save_metainfo_copy(infohash, info)
+            checking = status.state in (
+                lt.torrent_status.checking_files,
+                lt.torrent_status.checking_resume_data,
+            )
+            if checking and status.total_wanted > 0:
+                # во время проверки progress движка — прогресс самой проверки;
+                # показываем долю уже подтверждённых байтов (не выше настоящей)
+                progress = status.total_wanted_done / status.total_wanted * 100.0
+            else:
+                progress = status.progress * 100.0
             stats[infohash] = TorrentStats(
                 infohash=infohash,
                 name=status.name or infohash,
@@ -181,11 +194,12 @@ class Engine:
                 uploaded_bytes=status.total_payload_upload,
                 download_rate=status.download_payload_rate,
                 upload_rate=status.upload_payload_rate,
-                progress=status.progress * 100.0,
+                progress=progress,
                 num_peers=status.num_peers,
                 has_metadata=status.has_metadata,
                 is_complete=status.has_metadata
                 and status.state in (lt.torrent_status.finished, lt.torrent_status.seeding),
+                is_checking=checking,
                 paused=bool(status.flags & lt.torrent_flags.paused),
                 files=files,
             )

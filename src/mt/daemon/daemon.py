@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -23,9 +25,10 @@ from pathlib import Path
 from typing import IO, Any
 from urllib.parse import parse_qs, urlsplit
 
+from mt import autostart, paths
 from mt import config as config_mod
-from mt import paths
 from mt.daemon import engine as engine_mod
+from mt.daemon import spawn as spawn_mod
 from mt.daemon import state as state_mod
 from mt.ipc import proto
 from mt.ipc.server import IPCServer
@@ -99,10 +102,12 @@ class Daemon:
         return self._engine
 
     def start(self) -> None:
-        """Каталог состояния (0700), flock, движок, сокет и тикер прогресса."""
+        """Каталог состояния (0700), flock, движок, возобновление, сокет, тикер."""
         paths.ensure_state_dir()
         self._acquire_lock()
         self._engine = engine_mod.Engine(listen_port=self._listen_port_from_config())
+        self._resume_pending()
+        self._register_autostart()
         self._server.start()
         self._ticker = threading.Thread(target=self._tick_loop, name="mt-ticker", daemon=True)
         self._ticker.start()
@@ -129,16 +134,21 @@ class Daemon:
             return None
 
     def run_forever(self) -> None:
-        """Блокирующий цикл роли демона; завершается по stop()."""
+        """Блокирующий цикл роли демона; завершается по stop()/request_stop()."""
         try:
             while not self._stopping.wait(timeout=1.0):
                 pass
         finally:
             self.stop()
 
+    def request_stop(self) -> None:
+        """Просит демона остановиться; run_forever() завершится сам."""
+        self._stopping.set()
+
     def _acquire_lock(self) -> None:
         # файл живёт, пока демон держит flock — контекстный менеджер не подходит
-        lock_file = open(paths.lock_path(), "ab")  # noqa: SIM115
+        fd = os.open(paths.lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+        lock_file = os.fdopen(fd, "r+b")
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -146,7 +156,37 @@ class Daemon:
             if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
                 raise AlreadyRunning("демон уже запущен (mt.lock занят)") from exc
             raise DaemonError(f"не удалось взять {paths.lock_path()}: {exc}") from exc
+        # pid в lock-файле: тестам и пользователю видно, кого именно убивать
+        lock_file.truncate(0)
+        lock_file.write(str(os.getpid()).encode("ascii"))
+        lock_file.flush()
         self._lock_file = lock_file
+
+    def _resume_pending(self) -> None:
+        """D-07: записи ``downloading`` поднимаются сами на каждом старте.
+
+        Торрент заводится из сохранённой копии metainfo (D-06), а когда её
+        нет (magnet, не успевший получить метаданные) — из исходной ссылки.
+        Движок перепроверяет куски на диске, поэтому докачка начинается
+        с прежнего процента, не ниже (BEH-09, BEH-11).
+        """
+        for entry in self._entries:
+            if entry.status != state_mod.STATUS_DOWNLOADING:
+                continue
+            meta = paths.meta_dir() / f"{entry.infohash}.torrent"
+            source = str(meta) if meta.is_file() else entry.source
+            try:
+                self.engine.add(source, Path(entry.download_dir))
+            except engine_mod.EngineError as exc:
+                print(f"mt: не удалось возобновить «{entry.name}»: {exc}", file=sys.stderr)
+
+    @staticmethod
+    def _register_autostart() -> None:
+        """D-08: регистрация автозапуска ОС; неудача — предупреждение, не отказ."""
+        try:
+            autostart.install(spawn_mod.daemon_command())
+        except autostart.AutostartError as exc:
+            print(f"mt: автозапуск не настроен: {exc}", file=sys.stderr)
 
     # --- цикл прогресса ---------------------------------------------------
 
@@ -276,5 +316,7 @@ def run() -> int:
     except (DaemonError, engine_mod.EngineError, state_mod.StateError, OSError) as exc:
         print(f"mt: {exc}", file=sys.stderr)
         return 1
+    # launchd/systemd останавливают демона SIGTERM — завершаемся аккуратно
+    signal.signal(signal.SIGTERM, lambda *_: daemon.request_stop())
     daemon.run_forever()
     return 0

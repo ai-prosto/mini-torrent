@@ -10,6 +10,7 @@ import os
 import sys
 
 from mt import paths
+from mt.daemon import spawn
 from mt.ipc.client import Client, DaemonUnavailable, IPCError
 
 USAGE = """\
@@ -54,12 +55,14 @@ def normalize_source(source: str) -> str:
 
 def _cmd_add(source: str) -> int:
     try:
-        with Client(paths.socket_path()) as client:
-            response = client.add(normalize_source(source))
+        # BEH-08: демона нет — клиент сам поднимает его и ждёт сокет
+        client = spawn.connect(paths.socket_path())
     except DaemonUnavailable:
-        # самозапуск демона появится в DT-03
-        print("mt: демон не запущен", file=sys.stderr)
+        print("mt: демон не запустился", file=sys.stderr)
         return 1
+    try:
+        with client:
+            response = client.add(normalize_source(source))
     except IPCError as exc:
         print(f"mt: {exc}", file=sys.stderr)
         return 1
