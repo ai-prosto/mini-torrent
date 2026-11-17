@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import os
 import shlex
@@ -43,8 +44,11 @@ def render(daemon_command: list[str]) -> str:
 def install(daemon_command: list[str]) -> None:
     """Пишет unit, делает ``enable`` и включает linger; идемпотентна.
 
-    Совпадающий unit на диске означает, что ``enable`` и linger уже
-    делались раньше — повторные вызовы systemctl не нужны.
+    Совпадающий unit на диске — маркер завершённой установки: он остаётся
+    лежать только после успешных ``enable`` и linger, поэтому повторные
+    вызовы systemctl не нужны. Неудача systemctl убирает unit, и следующий
+    старт демона повторяет установку целиком (ssh-вход без DBus — обычная
+    среда для первой неудачи, BEH-20).
     """
     target = unit_path()
     payload = render(daemon_command)
@@ -55,16 +59,26 @@ def install(daemon_command: list[str]) -> None:
         target.write_text(payload, encoding="utf-8")
     except OSError as exc:
         raise AutostartError(f"не удалось записать {target}: {exc}") from exc
-    _run(["systemctl", "--user", "daemon-reload"])
-    _run(["systemctl", "--user", "enable", UNIT_NAME])
-    _run(["loginctl", "enable-linger", getpass.getuser()])
+    try:
+        _run(["systemctl", "--user", "daemon-reload"])
+        _run(["systemctl", "--user", "enable", UNIT_NAME])
+        _run(["loginctl", "enable-linger", getpass.getuser()])
+    except AutostartError:
+        with contextlib.suppress(OSError):
+            target.unlink()
+        raise
+
+
+_RUN_TIMEOUT = 15.0
 
 
 def _run(command: list[str]) -> None:
     try:
         result = subprocess.run(  # noqa: S603 — команды собираются из констант
-            command, capture_output=True, text=True, check=False
+            command, capture_output=True, text=True, check=False, timeout=_RUN_TIMEOUT
         )
+    except subprocess.TimeoutExpired as exc:
+        raise AutostartError(f"{shlex.join(command)}: не ответила за {_RUN_TIMEOUT:g} с") from exc
     except OSError as exc:
         raise AutostartError(f"не удалось выполнить {shlex.join(command)}: {exc}") from exc
     if result.returncode != 0:

@@ -152,7 +152,11 @@ class Engine:
         self._meta_dir.mkdir(parents=True, exist_ok=True)
         params = lt.add_torrent_params()
         params.ti = info
-        target.write_bytes(lt.bencode(lt.write_torrent_file(params)))
+        # атомарно: SIGKILL посреди записи не должен оставить битую копию,
+        # которую возобновление предпочтёт исходной ссылке
+        tmp = target.with_suffix(".torrent.tmp")
+        tmp.write_bytes(lt.bencode(lt.write_torrent_file(params)))
+        os.replace(tmp, target)
 
     # --- прогресс и завершение ---------------------------------------------
 

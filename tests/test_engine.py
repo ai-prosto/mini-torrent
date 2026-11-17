@@ -28,6 +28,8 @@ with warnings.catch_warnings():
     import libtorrent as lt
 
 MAGNET = "magnet:?xt=urn:btih:" + "e" * 40 + "&dn=ubuntu.iso"
+# ровно один блок libtorrent: кусок либо скачан целиком, либо нет — процент
+# перед kill состоит только из проверяемых кусков (важно для теста BEH-11)
 PIECE_SIZE = 16384
 TIMEOUT = 60.0
 

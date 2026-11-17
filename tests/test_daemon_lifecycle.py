@@ -47,8 +47,15 @@ def lifecycle_home(state_home: Path) -> Iterator[Path]:
     yield state_home
     with contextlib.suppress(OSError, ValueError):
         pid = int(paths.lock_path().read_text(encoding="ascii"))
-        if pid != os.getpid():  # в лок мог записаться демон внутри самого pytest
-            os.kill(pid, signal.SIGKILL)
+        if pid == os.getpid():  # в лок мог записаться демон внутри самого pytest
+            return
+        with open(paths.lock_path(), "ab") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                # flock занят — демон действительно жив; свободный flock значит,
+                # что pid устарел и убивать его нельзя (мог достаться другому)
+                os.kill(pid, signal.SIGKILL)
 
 
 def mt_command(*args: str) -> list[str]:
@@ -326,6 +333,25 @@ def test_resume_magnet_without_meta_uses_source(state_home: Path) -> None:
         assert daemon.engine.has(infohash)
     finally:
         daemon.stop()
+
+
+# --- SIGTERM: launchd/systemd останавливают демона аккуратно -----------------
+
+
+def test_sigterm_stops_daemon_gracefully(lifecycle_home: Path) -> None:
+    """SIGTERM (так демона гасят launchd/systemd): выход с кодом 0, сокет убран."""
+    paths.ensure_state_dir()
+    with open(paths.log_path(), "ab") as log:
+        proc = subprocess.Popen(mt_command("daemon"), stdout=log, stderr=log)
+    try:
+        wait_until(lambda: paths.socket_path().exists())
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=30) == 0
+        assert not paths.socket_path().exists()
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        proc.wait()
 
 
 # --- самозапуск: частности ---------------------------------------------------

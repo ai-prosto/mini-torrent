@@ -107,6 +107,35 @@ def test_systemd_install_writes_unit_and_enables(
     assert calls == []
 
 
+def test_systemd_failed_enable_is_retried_next_start(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Неудача systemctl не оставляет «успешный» unit: следующий вызов повторяет всё.
+
+    Первый старт демона по ssh без DBus — типичная среда, где enable/linger
+    падают; совпадающий unit на диске не должен навсегда закэшировать неудачу.
+    """
+
+    def failing_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 1, "", "нет dbus")
+
+    monkeypatch.setattr(systemd.subprocess, "run", failing_run)
+    with pytest.raises(autostart.AutostartError, match="нет dbus"):
+        systemd.install(COMMAND)
+    assert not systemd.unit_path().exists()  # маркер успеха не остался
+
+    calls: list[list[str]] = []
+
+    def ok_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(systemd.subprocess, "run", ok_run)
+    systemd.install(COMMAND)
+    assert systemd.unit_path().read_text(encoding="utf-8") == systemd.render(COMMAND)
+    assert len(calls) == 3  # daemon-reload, enable и enable-linger повторились
+
+
 def test_systemd_command_failure_raises(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(command, 1, "", "boom")

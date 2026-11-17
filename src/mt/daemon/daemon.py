@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import fcntl
 import os
@@ -107,8 +108,10 @@ class Daemon:
         self._acquire_lock()
         self._engine = engine_mod.Engine(listen_port=self._listen_port_from_config())
         self._resume_pending()
-        self._register_autostart()
         self._server.start()
+        # после сокета: клиенты не ждут systemctl/loginctl (у _run есть таймаут,
+        # но и он съел бы 5-секундный бюджет spawn.connect)
+        self._register_autostart()
         self._ticker = threading.Thread(target=self._tick_loop, name="mt-ticker", daemon=True)
         self._ticker.start()
 
@@ -174,11 +177,23 @@ class Daemon:
             if entry.status != state_mod.STATUS_DOWNLOADING:
                 continue
             meta = paths.meta_dir() / f"{entry.infohash}.torrent"
-            source = str(meta) if meta.is_file() else entry.source
-            try:
-                self.engine.add(source, Path(entry.download_dir))
-            except engine_mod.EngineError as exc:
-                print(f"mt: не удалось возобновить «{entry.name}»: {exc}", file=sys.stderr)
+            # битая копия metainfo (SIGKILL мог оборвать её запись) не должна
+            # блокировать возобновление навсегда — откат к исходной ссылке
+            sources = [str(meta)] if meta.is_file() else []
+            if entry.source not in sources:
+                sources.append(entry.source)
+            failure: Exception | None = None
+            for source in sources:
+                # RuntimeError приходит из libtorrent; без перехвата одна битая
+                # запись валила бы старт демона (с Restart=on-failure — циклично)
+                try:
+                    self.engine.add(source, Path(entry.download_dir))
+                    failure = None
+                    break
+                except (engine_mod.EngineError, RuntimeError) as exc:
+                    failure = exc
+            if failure is not None:
+                print(f"mt: не удалось возобновить «{entry.name}»: {failure}", file=sys.stderr)
 
     @staticmethod
     def _register_autostart() -> None:
@@ -310,13 +325,21 @@ def run() -> int:
     """Точка входа подкоманды ``mt daemon``."""
     try:
         daemon = Daemon()
+    except (state_mod.StateError, OSError) as exc:
+        print(f"mt: {exc}", file=sys.stderr)
+        return 1
+    # launchd/systemd останавливают демона SIGTERM — завершаемся аккуратно;
+    # обработчик ставится до start(): проверка кусков при возобновлении может
+    # длиться долго, и SIGTERM в этом окне не должен ронять процесс жёстко
+    signal.signal(signal.SIGTERM, lambda *_: daemon.request_stop())
+    try:
         daemon.start()
     except AlreadyRunning:
         return 0  # запущенный демон — не ошибка: гонку выиграл другой процесс
     except (DaemonError, engine_mod.EngineError, state_mod.StateError, OSError) as exc:
         print(f"mt: {exc}", file=sys.stderr)
         return 1
-    # launchd/systemd останавливают демона SIGTERM — завершаемся аккуратно
-    signal.signal(signal.SIGTERM, lambda *_: daemon.request_stop())
-    daemon.run_forever()
+    # Ctrl-C в форграунде: stop() уже отработал в finally run_forever()
+    with contextlib.suppress(KeyboardInterrupt):
+        daemon.run_forever()
     return 0
