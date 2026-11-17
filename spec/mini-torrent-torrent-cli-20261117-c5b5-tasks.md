@@ -17,19 +17,19 @@ Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition
 
 
 ### TASK-002: Движок закачки: add, параллельность, завершение без раздачи
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-01, BEH-02, BEH-05, BEH-17, BEH-18 (DT-02, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-02
 **Depends on:** [TASK-001]
 
 **Checklist:**
-- [ ] реализовать BEH-01: `mt add <magnet>` добавляет закачку и выходит с кодом 0
-- [ ] реализовать BEH-02: `mt add <файл.torrent>` добавляет закачку из локального файла
-- [ ] реализовать BEH-05: Три закачки подряд идут одновременно, без очереди
-- [ ] реализовать BEH-17: На 100% закачка переходит в «готово», соединения закрываются
-- [ ] реализовать BEH-18: После завершения исходящий трафик по торренту — ноль
-- [ ] проверка группы: tests/test_engine.py::test_add_magnet_exit_zero_and_listed (kind: pytest), tests/test_engine.py::test_add_torrent_file (kind: pytest), tests/test_engine.py::test_three_adds_all_downloading (kind: pytest), tests/test_engine.py::test_complete_sets_done_and_drops (kind: pytest), tests/test_engine.py::test_no_upload_after_done (kind: pytest) зелёные на BEH-01, BEH-02, BEH-05, BEH-17, BEH-18
+- [x] реализовать BEH-01: `mt add <magnet>` добавляет закачку и выходит с кодом 0
+- [x] реализовать BEH-02: `mt add <файл.torrent>` добавляет закачку из локального файла
+- [x] реализовать BEH-05: Три закачки подряд идут одновременно, без очереди
+- [x] реализовать BEH-17: На 100% закачка переходит в «готово», соединения закрываются
+- [x] реализовать BEH-18: После завершения исходящий трафик по торренту — ноль
+- [x] проверка группы: tests/test_engine.py::test_add_magnet_exit_zero_and_listed (kind: pytest), tests/test_engine.py::test_add_torrent_file (kind: pytest), tests/test_engine.py::test_three_adds_all_downloading (kind: pytest), tests/test_engine.py::test_complete_sets_done_and_drops (kind: pytest), tests/test_engine.py::test_no_upload_after_done (kind: pytest) зелёные на BEH-01, BEH-02, BEH-05, BEH-17, BEH-18
 
 
 
