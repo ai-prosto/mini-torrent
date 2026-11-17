@@ -3,33 +3,33 @@
 Сгенерировано task_bridge из behaviour-spec бандла mini-torrent-torrent-cli-20261117-c5b5 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Личный путь: бриф одобрен владельцем в разговоре, задачи исполняются сразу.
 
 ### TASK-001: Каркас бинаря, пути, конфиг, состояние и IPC
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-03, BEH-04, BEH-19 (DT-01, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-01
 
 **Checklist:**
-- [ ] реализовать BEH-03: При пустом конфиге файлы кладутся в папку по умолчанию
-- [ ] реализовать BEH-04: Путь из конфига применяется к новым закачкам
-- [ ] реализовать BEH-19: Один и тот же набор команд отрабатывает на macOS и на Linux
-- [ ] проверка группы: tests/test_config.py::test_default_download_dir (kind: pytest), tests/test_config.py::test_config_download_dir_applies (kind: pytest), docs/manual/cross-platform.md (kind: manual) зелёные на BEH-03, BEH-04, BEH-19
+- [x] реализовать BEH-03: При пустом конфиге файлы кладутся в папку по умолчанию
+- [x] реализовать BEH-04: Путь из конфига применяется к новым закачкам
+- [x] реализовать BEH-19: Один и тот же набор команд отрабатывает на macOS и на Linux
+- [x] проверка группы: tests/test_config.py::test_default_download_dir (kind: pytest), tests/test_config.py::test_config_download_dir_applies (kind: pytest), docs/manual/cross-platform.md (kind: manual) зелёные на BEH-03, BEH-04, BEH-19
 
 
 
 ### TASK-002: Движок закачки: add, параллельность, завершение без раздачи
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-01, BEH-02, BEH-05, BEH-17, BEH-18 (DT-02, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-02
 **Depends on:** [TASK-001]
 
 **Checklist:**
-- [ ] реализовать BEH-01: `mt add <magnet>` добавляет закачку и выходит с кодом 0
-- [ ] реализовать BEH-02: `mt add <файл.torrent>` добавляет закачку из локального файла
-- [ ] реализовать BEH-05: Три закачки подряд идут одновременно, без очереди
-- [ ] реализовать BEH-17: На 100% закачка переходит в «готово», соединения закрываются
-- [ ] реализовать BEH-18: После завершения исходящий трафик по торренту — ноль
-- [ ] проверка группы: tests/test_engine.py::test_add_magnet_exit_zero_and_listed (kind: pytest), tests/test_engine.py::test_add_torrent_file (kind: pytest), tests/test_engine.py::test_three_adds_all_downloading (kind: pytest), tests/test_engine.py::test_complete_sets_done_and_drops (kind: pytest), tests/test_engine.py::test_no_upload_after_done (kind: pytest) зелёные на BEH-01, BEH-02, BEH-05, BEH-17, BEH-18
+- [x] реализовать BEH-01: `mt add <magnet>` добавляет закачку и выходит с кодом 0
+- [x] реализовать BEH-02: `mt add <файл.torrent>` добавляет закачку из локального файла
+- [x] реализовать BEH-05: Три закачки подряд идут одновременно, без очереди
+- [x] реализовать BEH-17: На 100% закачка переходит в «готово», соединения закрываются
+- [x] реализовать BEH-18: После завершения исходящий трафик по торренту — ноль
+- [x] проверка группы: tests/test_engine.py::test_add_magnet_exit_zero_and_listed (kind: pytest), tests/test_engine.py::test_add_torrent_file (kind: pytest), tests/test_engine.py::test_three_adds_all_downloading (kind: pytest), tests/test_engine.py::test_complete_sets_done_and_drops (kind: pytest), tests/test_engine.py::test_no_upload_after_done (kind: pytest) зелёные на BEH-01, BEH-02, BEH-05, BEH-17, BEH-18
 
 
 
