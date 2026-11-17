@@ -34,7 +34,7 @@ Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition
 
 
 ### TASK-003: Жизненный цикл демона: самозапуск, автозапуск ОС, возобновление
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-07, BEH-08, BEH-09, BEH-10, BEH-11, BEH-20 (DT-03, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-03
