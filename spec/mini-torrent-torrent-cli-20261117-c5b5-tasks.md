@@ -3,7 +3,7 @@
 Сгенерировано task_bridge из behaviour-spec бандла mini-torrent-torrent-cli-20261117-c5b5 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Личный путь: бриф одобрен владельцем в разговоре, задачи исполняются сразу.
 
 ### TASK-001: Каркас бинаря, пути, конфиг, состояние и IPC
-P2 | 🔄 IN_PROGRESS   Est: 0.5d
+P2 | 🔍 REVIEW   Est: 0.5d
 
 Реализовать сценарии BEH-03, BEH-04, BEH-19 (DT-01, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-01

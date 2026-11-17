@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
 
-from mt import cli
+from mt import cli, paths
 from mt.daemon.daemon import Daemon
 
 MAGNET = "magnet:?xt=urn:btih:" + "d" * 40 + "&dn=mint.iso"
@@ -83,3 +84,52 @@ def test_daemon_role_runs_and_stops(state_home: Path, monkeypatch: pytest.Monkey
         assert cli.main(["daemon"]) == 0  # lock занят — гонку выиграл первый
     finally:
         running.stop()
+
+
+def test_run_forever_stops_and_cleans_up(state_home: Path) -> None:
+    """Настоящий цикл: stop() завершает run_forever, сокет убран, lock отпущен."""
+    instance = Daemon()
+    instance.start()
+    loop = threading.Thread(target=instance.run_forever)
+    loop.start()
+    instance.stop()
+    loop.join(timeout=5)
+
+    assert not loop.is_alive()
+    assert not paths.socket_path().exists()
+
+    successor = Daemon()  # lock свободен — новый демон стартует
+    successor.start()
+    successor.stop()
+
+
+def test_daemon_with_corrupt_state_exits_one(
+    state_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Битый state.json: чистое сообщение и код 1, а не трейсбек."""
+    paths.ensure_state_dir()
+    paths.state_file().write_text("{broken", encoding="utf-8")
+
+    code = cli.main(["daemon"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.startswith("mt: ")
+    assert "state.json" in captured.err
+
+
+def test_normalize_source_absolutizes_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Путь к .torrent абсолютизируется клиентом: cwd демона — другой."""
+    monkeypatch.chdir(tmp_path)
+    assert cli.normalize_source("file.torrent") == str(tmp_path / "file.torrent")
+    assert cli.normalize_source(MAGNET) == MAGNET
+
+
+def test_add_empty_source_exits_one(
+    daemon: Daemon, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(["add", ""])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.startswith("mt: ")

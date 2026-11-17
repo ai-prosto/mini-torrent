@@ -62,7 +62,17 @@ def save(path: Path, entries: list[Entry]) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp_name, path)
+        _fsync_dir(path.parent)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Сбрасывает каталог на диск: без этого rename может не пережить сбой питания."""
+    dir_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)

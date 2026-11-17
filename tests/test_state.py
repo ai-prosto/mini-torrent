@@ -55,3 +55,23 @@ def test_load_rejects_wrong_shape(tmp_path: Path) -> None:
     path.write_text(json.dumps({"entries": [{"unknown_field": 1}]}), encoding="utf-8")
     with pytest.raises(state.StateError):
         state.load(path)
+
+
+def test_save_failure_keeps_old_file_and_no_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Сбой записи: прежний state.json цел, временный файл убран."""
+    path = tmp_path / "state.json"
+    state.save(path, [make_entry("one")])
+    original = path.read_text(encoding="utf-8")
+
+    def broken_replace(src: str, dst: object) -> None:
+        raise OSError("диск переполнен")
+
+    monkeypatch.setattr(state.os, "replace", broken_replace)
+    with pytest.raises(OSError, match="переполнен"):
+        state.save(path, [make_entry("one"), make_entry("two")])
+    monkeypatch.undo()
+
+    assert path.read_text(encoding="utf-8") == original
+    assert {child.name for child in tmp_path.iterdir()} == {"state.json"}

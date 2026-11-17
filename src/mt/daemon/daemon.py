@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import re
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -28,6 +30,7 @@ from mt.ipc.server import IPCServer
 SNAPSHOT_INTERVAL = 0.5
 
 _BTIH_RE = re.compile(r"^urn:btih:([0-9a-fA-F]{40}|[A-Za-z2-7]{32})$")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class DaemonError(Exception):
@@ -54,13 +57,18 @@ def parse_source(source: str) -> tuple[str, str]:
                 break
         if not infohash:
             raise ValueError("magnet-ссылка без urn:btih")
-        name = params.get("dn", [infohash])[0]
+        name = _clean_name(params.get("dn", [""])[0]) or infohash
         return infohash, name
 
     path = Path(source).expanduser()
     if not path.is_file():
         raise ValueError(f"файл не найден: {source}")
-    return "", path.stem
+    return "", _clean_name(path.stem) or "torrent"
+
+
+def _clean_name(raw: str) -> str:
+    """Выкидывает управляющие символы: имя попадает в табличный вывод списка."""
+    return _CONTROL_RE.sub(" ", raw).strip()
 
 
 class Daemon:
@@ -106,7 +114,9 @@ class Daemon:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             lock_file.close()
-            raise AlreadyRunning("демон уже запущен (mt.lock занят)") from exc
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                raise AlreadyRunning("демон уже запущен (mt.lock занят)") from exc
+            raise DaemonError(f"не удалось взять {paths.lock_path()}: {exc}") from exc
         self._lock_file = lock_file
 
     # --- обработчики запросов -------------------------------------------
@@ -129,8 +139,9 @@ class Daemon:
             added_at=datetime.now(UTC).isoformat(),
         )
         with self._lock:
+            # сперва на диск: при ошибке записи память и state.json не расходятся
+            state_mod.save(self._state_path, [*self._entries, entry])
             self._entries.append(entry)
-            state_mod.save(self._state_path, self._entries)
         return proto.ok(name=name, infohash=infohash, download_dir=str(cfg.download_dir))
 
     def _handle_list(self, _request: dict[str, Any]) -> dict[str, Any]:
@@ -148,10 +159,13 @@ class Daemon:
 
 def run() -> int:
     """Точка входа подкоманды ``mt daemon``."""
-    daemon = Daemon()
     try:
+        daemon = Daemon()
         daemon.start()
     except AlreadyRunning:
         return 0  # запущенный демон — не ошибка: гонку выиграл другой процесс
+    except (DaemonError, state_mod.StateError, OSError) as exc:
+        print(f"mt: {exc}", file=sys.stderr)
+        return 1
     daemon.run_forever()
     return 0

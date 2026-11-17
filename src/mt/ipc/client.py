@@ -23,13 +23,17 @@ class Client:
 
     def __init__(self, socket_path: Path, timeout: float | None = 10.0) -> None:
         self._socket_path = socket_path
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self._sock.settimeout(timeout)
-            self._sock.connect(str(socket_path))
-        except (FileNotFoundError, ConnectionRefusedError) as exc:
+            sock.settimeout(timeout)
+            sock.connect(str(socket_path))
+        except OSError as exc:
+            # нет сокета, отказ, мусор вместо сокета, зависший демон — всё
+            # одинаково означает «живого демона на этом пути нет»
+            sock.close()
             raise DaemonUnavailable(f"демон не отвечает на {socket_path}") from exc
-        self._reader = self._sock.makefile("rb")
+        self._sock = sock
+        self._reader = sock.makefile("rb")
 
     def close(self) -> None:
         self._reader.close()

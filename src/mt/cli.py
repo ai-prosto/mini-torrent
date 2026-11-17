@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 from mt import paths
@@ -44,10 +45,17 @@ def _usage_error() -> int:
     return 2
 
 
+def normalize_source(source: str) -> str:
+    """Абсолютизирует путь к .torrent: демон работает с другим cwd."""
+    if source.startswith("magnet:"):
+        return source
+    return os.path.abspath(os.path.expanduser(source))
+
+
 def _cmd_add(source: str) -> int:
     try:
         with Client(paths.socket_path()) as client:
-            response = client.add(source)
+            response = client.add(normalize_source(source))
     except DaemonUnavailable:
         # самозапуск демона появится в DT-03
         print("mt: демон не запущен", file=sys.stderr)

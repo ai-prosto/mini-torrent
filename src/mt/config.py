@@ -40,6 +40,8 @@ def load(path: Path | None = None) -> Config:
         pass
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"не удалось разобрать {path}: {exc}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"не удалось прочитать {path}: {exc}") from exc
 
     download_dir = _read_download_dir(data, path)
     listen_port = _read_listen_port(data, path)

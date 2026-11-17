@@ -18,6 +18,7 @@ from typing import Any
 from mt.ipc import proto
 
 SOCKET_MODE = 0o600
+MAX_LINE = 1 << 20  # запрос длиннее 1 МиБ — не наш протокол
 
 # add/list возвращают словарь-ответ; subscribe — итератор снапшотов.
 Handler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -74,10 +75,11 @@ class IPCServer:
             self._socket_path.unlink()
 
     def _accept_loop(self) -> None:
-        assert self._sock is not None
+        sock = self._sock  # локальная ссылка: stop() обнуляет self._sock
+        assert sock is not None
         while not self._stopping.is_set():
             try:
-                conn, _ = self._sock.accept()
+                conn, _ = sock.accept()
             except OSError:
                 return
             threading.Thread(
@@ -86,7 +88,14 @@ class IPCServer:
 
     def _serve_connection(self, conn: socket.socket) -> None:
         with conn, conn.makefile("rb") as reader:
-            for line in reader:
+            while True:
+                line = reader.readline(MAX_LINE + 1)
+                if not line:
+                    return
+                if len(line) > MAX_LINE:
+                    with contextlib.suppress(OSError):
+                        conn.sendall(proto.encode(proto.error("запрос слишком длинный")))
+                    return
                 if not line.strip():
                     continue
                 try:

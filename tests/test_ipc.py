@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ from mt import paths
 from mt.daemon.daemon import Daemon, parse_source
 from mt.ipc import proto
 from mt.ipc.client import Client, DaemonUnavailable, IPCError
+from tests.conftest import write_config
 
 MAGNET = "magnet:?xt=urn:btih:" + "b" * 40 + "&dn=fedora.iso"
 
@@ -65,6 +68,36 @@ def test_parse_source_missing_file(tmp_path: Path) -> None:
         parse_source(str(tmp_path / "nope.torrent"))
 
 
+def test_parse_source_uppercase_hex_is_lowercased() -> None:
+    infohash, _ = parse_source("magnet:?xt=urn:btih:" + "B" * 40 + "&dn=x")
+    assert infohash == "b" * 40
+
+
+def test_parse_source_base32_infohash() -> None:
+    base32 = "abcdefghijklmnopqrstuvwxyz234567"
+    infohash, _ = parse_source(f"magnet:?xt=urn:btih:{base32}&dn=x")
+    assert infohash == base32
+
+
+def test_parse_source_without_dn_falls_back_to_infohash() -> None:
+    infohash, name = parse_source("magnet:?xt=urn:btih:" + "b" * 40)
+    assert name == infohash == "b" * 40
+
+
+def test_parse_source_skips_non_btih_xt() -> None:
+    magnet = "magnet:?xt=urn:sha1:AAAA&xt=urn:btih:" + "c" * 40
+    infohash, _ = parse_source(magnet)
+    assert infohash == "c" * 40
+
+
+def test_parse_source_strips_control_characters_from_dn() -> None:
+    magnet = "magnet:?xt=urn:btih:" + "b" * 40 + "&dn=a%09done%0Ab"
+    _, name = parse_source(magnet)
+    assert "\t" not in name
+    assert "\n" not in name
+    assert name == "a done b"
+
+
 # --- сервер и клиент против живого демона ---------------------------------
 
 
@@ -109,6 +142,79 @@ def test_unknown_op_gets_protocol_error(daemon: Daemon) -> None:
 def test_client_without_daemon_raises(state_home: Path) -> None:
     with pytest.raises(DaemonUnavailable):
         Client(paths.socket_path())
+
+
+def test_plain_file_at_socket_path_raises_daemon_unavailable(state_home: Path) -> None:
+    paths.ensure_state_dir()
+    paths.socket_path().write_bytes(b"not a socket")
+    with pytest.raises(DaemonUnavailable):
+        Client(paths.socket_path())
+
+
+def test_stale_socket_from_killed_daemon(state_home: Path) -> None:
+    """Файл сокета пережил kill -9: клиент видит «демона нет», новый демон стартует поверх."""
+    paths.ensure_state_dir()
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(paths.socket_path()))
+    stale.close()  # файл остаётся без слушателя
+
+    with pytest.raises(DaemonUnavailable):
+        Client(paths.socket_path())
+
+    revived = Daemon()
+    revived.start()
+    try:
+        with Client(paths.socket_path()) as client:
+            assert client.list()["entries"] == []
+    finally:
+        revived.stop()
+
+
+def test_connection_survives_bad_request(daemon: Daemon) -> None:
+    """После ошибочной строки то же соединение обслуживает следующий запрос."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw:
+        raw.connect(str(paths.socket_path()))
+        reader = raw.makefile("rb")
+        raw.sendall(b"garbage\n")
+        assert proto.decode(reader.readline())["ok"] is False
+        raw.sendall(b'{"op": "list"}\n')
+        assert proto.decode(reader.readline())["ok"] is True
+
+
+def test_broken_config_reaches_client_and_daemon_survives(
+    home: Path, daemon: Daemon, client: Client
+) -> None:
+    """ConfigError при add уходит клиенту как ошибка, демон продолжает работать."""
+    config_path = write_config(home, "download_dir = [unclosed\n")
+
+    with pytest.raises(IPCError, match="разобрать"):
+        client.add(MAGNET)
+    assert client.list()["entries"] == []  # запись не завелась
+
+    config_path.unlink()
+    assert client.add(MAGNET)["name"] == "fedora.iso"
+
+
+def test_concurrent_adds_all_persisted(daemon: Daemon) -> None:
+    """Блокировка демона: параллельные add не теряют записей и не рвут state.json."""
+    count = 8
+
+    def add_one(index: int) -> None:
+        with Client(paths.socket_path()) as adder:
+            adder.add(f"magnet:?xt=urn:btih:{index:040x}&dn=t{index}.iso")
+
+    threads = [threading.Thread(target=add_one, args=(i,)) for i in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    with Client(paths.socket_path()) as client:
+        names = {entry["name"] for entry in client.list()["entries"]}
+    assert names == {f"t{i}.iso" for i in range(count)}
+
+    saved = json.loads(paths.state_file().read_text(encoding="utf-8"))
+    assert len(saved["entries"]) == count
 
 
 def test_second_daemon_refuses_lock(daemon: Daemon) -> None:
