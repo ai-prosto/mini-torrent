@@ -1,9 +1,11 @@
-"""Запуск роли демона: блокировка, сокет, состояние, цикл (D-02, D-15).
+"""Запуск роли демона: блокировка, сокет, состояние, движок, цикл (D-02, D-15).
 
-Торрент-движка здесь ещё нет (он появляется в DT-02): ``add`` читает конфиг,
-создаёт каталог загрузок, заводит запись в ``state.json`` и отвечает клиенту.
-Конфиг перечитывается на каждый ``add``, поэтому правка ``download_dir``
-действует на новые закачки без перезапуска демона (D-05).
+``add`` читает конфиг, создаёт каталог загрузок, заводит торрент в движок
+и запись в ``state.json``, отвечает клиенту. Конфиг перечитывается на каждый
+``add``, поэтому правка ``download_dir`` действует на новые закачки без
+перезапуска демона (D-05). Тикер раз в 500 мс собирает срез прогресса для
+снапшотов; на 100% запись переходит в ``done``, торрент выбрасывается из
+движка, и соединения с пирами закрываются (D-10).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from mt import config as config_mod
 from mt import paths
+from mt.daemon import engine as engine_mod
 from mt.daemon import state as state_mod
 from mt.ipc import proto
 from mt.ipc.server import IPCServer
@@ -78,26 +81,52 @@ class Daemon:
         self._state_path = paths.state_file()
         self._lock = threading.Lock()
         self._entries = state_mod.load(self._state_path)
+        self._stats: dict[str, engine_mod.TorrentStats] = {}
         self._stopping = threading.Event()
         self._lock_file: IO[bytes] | None = None
+        self._engine: engine_mod.Engine | None = None
+        self._ticker: threading.Thread | None = None
         self._server = IPCServer(
             paths.socket_path(),
             handlers={proto.OP_ADD: self._handle_add, proto.OP_LIST: self._handle_list},
             subscribe_handler=self._handle_subscribe,
         )
 
+    @property
+    def engine(self) -> engine_mod.Engine:
+        if self._engine is None:
+            raise DaemonError("демон не запущен")
+        return self._engine
+
     def start(self) -> None:
-        """Создаёт каталог состояния (0700), берёт flock и открывает сокет."""
+        """Каталог состояния (0700), flock, движок, сокет и тикер прогресса."""
         paths.ensure_state_dir()
         self._acquire_lock()
+        self._engine = engine_mod.Engine(listen_port=self._listen_port_from_config())
         self._server.start()
+        self._ticker = threading.Thread(target=self._tick_loop, name="mt-ticker", daemon=True)
+        self._ticker.start()
 
     def stop(self) -> None:
         self._stopping.set()
+        ticker, self._ticker = self._ticker, None
+        if ticker is not None:
+            ticker.join(timeout=5)
         self._server.stop()
+        engine, self._engine = self._engine, None
+        if engine is not None:
+            engine.close()
         if self._lock_file is not None:
             self._lock_file.close()
             self._lock_file = None
+
+    @staticmethod
+    def _listen_port_from_config() -> int | None:
+        # битый конфиг не должен мешать старту демона: об ошибке сообщит add
+        try:
+            return config_mod.load().listen_port
+        except config_mod.ConfigError:
+            return None
 
     def run_forever(self) -> None:
         """Блокирующий цикл роли демона; завершается по stop()."""
@@ -119,30 +148,80 @@ class Daemon:
             raise DaemonError(f"не удалось взять {paths.lock_path()}: {exc}") from exc
         self._lock_file = lock_file
 
+    # --- цикл прогресса ---------------------------------------------------
+
+    def _tick_loop(self) -> None:
+        """Раз в 500 мс обновляет срез движка и обрабатывает завершения."""
+        while not self._stopping.wait(timeout=SNAPSHOT_INTERVAL):
+            try:
+                self._refresh()
+            except Exception as exc:  # цикл прогресса не должен умирать
+                print(f"mt: ошибка цикла прогресса: {exc}", file=sys.stderr)
+
+    def _refresh(self) -> None:
+        engine = self._engine
+        if engine is None:
+            return
+        stats = engine.poll()
+        completed: list[str] = []
+        with self._lock:
+            # срез копится, а не замещается: отданные байты завершённых
+            # закачек остаются видны и после drop
+            self._stats.update(stats)
+            changed = False
+            for entry in self._entries:
+                live = stats.get(entry.infohash)
+                if live is None:
+                    continue
+                if live.has_metadata and not entry.files:
+                    # метаданные магнита приехали: узнали имя, размер и файлы
+                    entry.name = _clean_name(live.name) or entry.name
+                    entry.total_bytes = live.total_bytes
+                    entry.files = list(live.files)
+                    changed = True
+                if live.is_complete and entry.status == state_mod.STATUS_DOWNLOADING:
+                    entry.status = state_mod.STATUS_DONE
+                    entry.completed_at = datetime.now(UTC).isoformat()
+                    completed.append(entry.infohash)
+                    changed = True
+            if changed:
+                state_mod.save(self._state_path, list(self._entries))
+        for infohash in completed:
+            # BEH-17: на 100% торрент выбрасывается, соединения закрываются
+            engine.drop(infohash)
+
     # --- обработчики запросов -------------------------------------------
 
     def _handle_add(self, request: dict[str, Any]) -> dict[str, Any]:
         source = request["source"]
         try:
-            infohash, name = parse_source(source)
+            _, fallback_name = parse_source(source)  # ранняя проверка источника
         except ValueError as exc:
             return proto.error(str(exc))
 
         cfg = config_mod.load()  # перечитывается на каждый add (D-05)
         cfg.download_dir.mkdir(parents=True, exist_ok=True)
 
+        try:
+            added = self.engine.add(source, cfg.download_dir)
+        except engine_mod.EngineError as exc:
+            return proto.error(str(exc))
+
+        name = _clean_name(added.name) or fallback_name
         entry = state_mod.Entry(
-            infohash=infohash,
+            infohash=added.infohash,
             name=name,
             source=source,
             download_dir=str(cfg.download_dir),
+            files=list(added.files),
+            total_bytes=added.total_bytes,
             added_at=datetime.now(UTC).isoformat(),
         )
         with self._lock:
             # сперва на диск: при ошибке записи память и state.json не расходятся
             state_mod.save(self._state_path, [*self._entries, entry])
             self._entries.append(entry)
-        return proto.ok(name=name, infohash=infohash, download_dir=str(cfg.download_dir))
+        return proto.ok(name=name, infohash=added.infohash, download_dir=str(cfg.download_dir))
 
     def _handle_list(self, _request: dict[str, Any]) -> dict[str, Any]:
         return proto.ok(entries=self._snapshot_entries())
@@ -153,8 +232,38 @@ class Daemon:
             time.sleep(SNAPSHOT_INTERVAL)
 
     def _snapshot_entries(self) -> list[dict[str, Any]]:
+        """Записи состояния, обогащённые живым прогрессом из движка."""
         with self._lock:
-            return [asdict(entry) for entry in self._entries]
+            snapshot = []
+            for entry in self._entries:
+                data = asdict(entry)
+                live = self._stats.get(entry.infohash)
+                if entry.status == state_mod.STATUS_DONE:
+                    data.update(
+                        progress=100.0,
+                        download_rate=0,
+                        upload_rate=0,
+                        uploaded_bytes=live.uploaded_bytes if live else 0,
+                        num_peers=0,
+                    )
+                elif live is not None:
+                    data.update(
+                        progress=round(live.progress, 1),
+                        download_rate=live.download_rate,
+                        upload_rate=live.upload_rate,
+                        uploaded_bytes=live.uploaded_bytes,
+                        num_peers=live.num_peers,
+                    )
+                else:
+                    data.update(
+                        progress=0.0,
+                        download_rate=0,
+                        upload_rate=0,
+                        uploaded_bytes=0,
+                        num_peers=0,
+                    )
+                snapshot.append(data)
+            return snapshot
 
 
 def run() -> int:
@@ -164,7 +273,7 @@ def run() -> int:
         daemon.start()
     except AlreadyRunning:
         return 0  # запущенный демон — не ошибка: гонку выиграл другой процесс
-    except (DaemonError, state_mod.StateError, OSError) as exc:
+    except (DaemonError, engine_mod.EngineError, state_mod.StateError, OSError) as exc:
         print(f"mt: {exc}", file=sys.stderr)
         return 1
     daemon.run_forever()

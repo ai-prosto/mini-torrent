@@ -17,7 +17,7 @@ Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition
 
 
 ### TASK-002: Движок закачки: add, параллельность, завершение без раздачи
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-01, BEH-02, BEH-05, BEH-17, BEH-18 (DT-02, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-02

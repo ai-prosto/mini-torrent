@@ -201,7 +201,8 @@ def test_concurrent_adds_all_persisted(daemon: Daemon) -> None:
 
     def add_one(index: int) -> None:
         with Client(paths.socket_path()) as adder:
-            adder.add(f"magnet:?xt=urn:btih:{index:040x}&dn=t{index}.iso")
+            # нулевой инфохэш движок отвергает, поэтому index + 1
+            adder.add(f"magnet:?xt=urn:btih:{index + 1:040x}&dn=t{index}.iso")
 
     threads = [threading.Thread(target=add_one, args=(i,)) for i in range(count)]
     for thread in threads:

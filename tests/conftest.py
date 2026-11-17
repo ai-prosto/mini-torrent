@@ -10,8 +10,15 @@ from pathlib import Path
 import pytest
 
 from mt import paths
+from mt.daemon import engine as engine_mod
 from mt.daemon.daemon import Daemon
 from mt.ipc.client import Client
+
+
+@pytest.fixture(autouse=True)
+def _local_only_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Движок в тестах не трогает сеть: без DHT/LSD, слушает только loopback."""
+    monkeypatch.setattr(engine_mod, "LOCAL_ONLY_DEFAULT", True)
 
 
 @pytest.fixture

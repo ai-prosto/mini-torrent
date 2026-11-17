@@ -7,7 +7,9 @@ authors = [
     { name = "ai-prosto", email = "ai@pr0sto.xyz" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "libtorrent>=2.1.1",
+]
 
 [project.scripts]
 mt = "mt.cli:main"
