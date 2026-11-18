@@ -11,7 +11,7 @@ import sys
 
 from mt import paths
 from mt.daemon import spawn
-from mt.ipc.client import Client, DaemonUnavailable, IPCError
+from mt.ipc.client import DaemonUnavailable, IPCError
 
 USAGE = """\
 использование:
@@ -71,19 +71,10 @@ def _cmd_add(source: str) -> int:
 
 
 def _cmd_tui() -> int:
-    # полноценный TUI появится в DT-05; пока — одноразовый список
-    try:
-        with Client(paths.socket_path()) as client:
-            response = client.list()
-    except DaemonUnavailable:
-        print("mt: демон не запущен, закачек нет", file=sys.stderr)
-        return 1
-    except IPCError as exc:
-        print(f"mt: {exc}", file=sys.stderr)
-        return 1
-    for entry in response["entries"]:
-        print(f"{entry['name']}\t{entry['status']}\t{entry['download_dir']}")
-    return 0
+    # BEH-12: `mt` и `mt tui` открывают одно и то же окно со списком
+    from mt.tui import app
+
+    return app.run()
 
 
 if __name__ == "__main__":

@@ -66,18 +66,18 @@ Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition
 
 
 ### TASK-005: TUI со списком закачек и скачанного
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-06, BEH-12, BEH-13, BEH-14 (DT-05, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-05
 **Depends on:** [TASK-002]
 
 **Checklist:**
-- [ ] реализовать BEH-06: Три закачки видны в TUI тремя строками
-- [ ] реализовать BEH-12: `mt` и `mt tui` показывают имя, процент и скорость
-- [ ] реализовать BEH-13: Уже скачанные файлы видны в том же списке
-- [ ] реализовать BEH-14: Прогресс в окне обновляется сам, без нажатий
-- [ ] проверка группы: tests/test_tui.py::test_three_rows (kind: pytest), tests/test_tui.py::test_list_columns (kind: pytest), tests/test_tui.py::test_done_entries_listed (kind: pytest), tests/test_tui.py::test_snapshot_refresh_without_input (kind: pytest) зелёные на BEH-06, BEH-12, BEH-13, BEH-14
+- [x] реализовать BEH-06: Три закачки видны в TUI тремя строками
+- [x] реализовать BEH-12: `mt` и `mt tui` показывают имя, процент и скорость
+- [x] реализовать BEH-13: Уже скачанные файлы видны в том же списке
+- [x] реализовать BEH-14: Прогресс в окне обновляется сам, без нажатий
+- [x] проверка группы: tests/test_tui.py::test_three_rows (kind: pytest), tests/test_tui.py::test_list_columns (kind: pytest), tests/test_tui.py::test_done_entries_listed (kind: pytest), tests/test_tui.py::test_snapshot_refresh_without_input (kind: pytest) зелёные на BEH-06, BEH-12, BEH-13, BEH-14
 
 
 
