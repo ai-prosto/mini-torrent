@@ -52,16 +52,16 @@ Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition
 
 
 ### TASK-004: Слежение за диском и удаление пропавших записей
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-15, BEH-16 (DT-04, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-04
 **Depends on:** [TASK-002]
 
 **Checklist:**
-- [ ] реализовать BEH-15: Удалённый с диска файл пропадает из состояния и из снапшота
-- [ ] реализовать BEH-16: Пропажа записи происходит без перезапуска демона
-- [ ] проверка группы: tests/test_watcher.py::test_deleted_file_removed_from_state_and_snapshot (kind: pytest), tests/test_watcher.py::test_removal_on_live_daemon (kind: pytest) зелёные на BEH-15, BEH-16
+- [x] реализовать BEH-15: Удалённый с диска файл пропадает из состояния и из снапшота
+- [x] реализовать BEH-16: Пропажа записи происходит без перезапуска демона
+- [x] проверка группы: tests/test_watcher.py::test_deleted_file_removed_from_state_and_snapshot (kind: pytest), tests/test_watcher.py::test_removal_on_live_daemon (kind: pytest) зелёные на BEH-15, BEH-16
 
 
 

@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "libtorrent>=2.1.1",
+    "watchdog>=7.1.0",
 ]
 
 [project.scripts]

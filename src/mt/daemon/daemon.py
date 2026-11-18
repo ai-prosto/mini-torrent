@@ -5,7 +5,9 @@
 ``add``, поэтому правка ``download_dir`` действует на новые закачки без
 перезапуска демона (D-05). Тикер раз в 500 мс собирает срез прогресса для
 снапшотов; на 100% запись переходит в ``done``, торрент выбрасывается из
-движка, и соединения с пирами закрываются (D-10).
+движка, и соединения с пирами закрываются (D-10). Watcher следит за диском
+(D-11): запись, у которой не осталось ни одного файла, удаляется из
+``state.json`` и из движка без перезапуска демона (BEH-15, BEH-16).
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from mt import config as config_mod
 from mt.daemon import engine as engine_mod
 from mt.daemon import spawn as spawn_mod
 from mt.daemon import state as state_mod
+from mt.daemon import watcher as watcher_mod
 from mt.ipc import proto
 from mt.ipc.server import IPCServer
 
@@ -90,6 +93,7 @@ class Daemon:
         self._lock_file: IO[bytes] | None = None
         self._engine: engine_mod.Engine | None = None
         self._ticker: threading.Thread | None = None
+        self._watcher: watcher_mod.Watcher | None = None
         self._server = IPCServer(
             paths.socket_path(),
             handlers={proto.OP_ADD: self._handle_add, proto.OP_LIST: self._handle_list},
@@ -114,9 +118,15 @@ class Daemon:
         self._register_autostart()
         self._ticker = threading.Thread(target=self._tick_loop, name="mt-ticker", daemon=True)
         self._ticker.start()
+        self._watcher = watcher_mod.Watcher(self._watched_entries, self._remove_missing)
+        self._watcher.start()
 
     def stop(self) -> None:
         self._stopping.set()
+        # watcher гасится до движка: его колбэк зовёт engine.drop
+        watcher, self._watcher = self._watcher, None
+        if watcher is not None:
+            watcher.stop()
         ticker, self._ticker = self._ticker, None
         if ticker is not None:
             ticker.join(timeout=5)
@@ -243,6 +253,40 @@ class Daemon:
                 state_mod.save(self._state_path, list(self._entries))
         for infohash in completed:
             # BEH-17: на 100% торрент выбрасывается, соединения закрываются
+            engine.drop(infohash)
+
+    # --- слежение за диском (D-11) ----------------------------------------
+
+    def _watched_entries(self) -> list[watcher_mod.WatchedEntry]:
+        """Срез записей для watcher: пути файлов и признак ``done``."""
+        with self._lock:
+            return [
+                watcher_mod.WatchedEntry(
+                    infohash=entry.infohash,
+                    download_dir=entry.download_dir,
+                    files=list(entry.files),
+                    done=entry.status == state_mod.STATUS_DONE,
+                )
+                for entry in self._entries
+            ]
+
+    def _remove_missing(self, infohash: str) -> None:
+        """BEH-15, BEH-16: все файлы записи пропали с диска.
+
+        Запись удаляется из ``state.json`` и из памяти, ещё активный торрент
+        выбрасывается из движка — всё на живом демоне, следующий снапшот
+        уходит в TUI уже без неё.
+        """
+        with self._lock:
+            kept = [entry for entry in self._entries if entry.infohash != infohash]
+            if len(kept) == len(self._entries):
+                return
+            # сперва на диск: при ошибке записи память и state.json не расходятся
+            state_mod.save(self._state_path, kept)
+            self._entries[:] = kept
+            self._stats.pop(infohash, None)
+        engine = self._engine
+        if engine is not None:
             engine.drop(infohash)
 
     # --- обработчики запросов -------------------------------------------
