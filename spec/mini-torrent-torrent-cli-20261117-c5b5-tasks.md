@@ -52,7 +52,7 @@ Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition
 
 
 ### TASK-004: Слежение за диском и удаление пропавших записей
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-15, BEH-16 (DT-04, группа solo).
 Source: workstreams/mini-torrent-torrent-cli-20261117-c5b5/spec/30-decomposition.md#DT-04
