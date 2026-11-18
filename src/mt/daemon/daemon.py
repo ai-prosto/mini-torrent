@@ -231,8 +231,10 @@ class Daemon:
         completed: list[str] = []
         with self._lock:
             # срез копится, а не замещается: отданные байты завершённых
-            # закачек остаются видны и после drop
-            self._stats.update(stats)
+            # закачек остаются видны и после drop; фильтр по живым записям —
+            # watcher мог удалить запись между poll() и взятием замка
+            known = {entry.infohash for entry in self._entries}
+            self._stats.update({ih: st for ih, st in stats.items() if ih in known})
             changed = False
             for entry in self._entries:
                 live = stats.get(entry.infohash)
@@ -266,28 +268,35 @@ class Daemon:
                     download_dir=entry.download_dir,
                     files=list(entry.files),
                     done=entry.status == state_mod.STATUS_DONE,
+                    added_at=entry.added_at,
                 )
                 for entry in self._entries
             ]
 
-    def _remove_missing(self, infohash: str) -> None:
+    def _remove_missing(self, watched: watcher_mod.WatchedEntry) -> None:
         """BEH-15, BEH-16: все файлы записи пропали с диска.
 
         Запись удаляется из ``state.json`` и из памяти, ещё активный торрент
         выбрасывается из движка — всё на живом демоне, следующий снапшот
-        уходит в TUI уже без неё.
+        уходит в TUI уже без неё. Сверка и по ``added_at``: срез watcher мог
+        устареть, пока тот же торрент удалили и добавили заново — свежую
+        запись трогать нельзя.
         """
         with self._lock:
-            kept = [entry for entry in self._entries if entry.infohash != infohash]
+            kept = [
+                entry
+                for entry in self._entries
+                if entry.infohash != watched.infohash or entry.added_at != watched.added_at
+            ]
             if len(kept) == len(self._entries):
                 return
             # сперва на диск: при ошибке записи память и state.json не расходятся
             state_mod.save(self._state_path, kept)
             self._entries[:] = kept
-            self._stats.pop(infohash, None)
+            self._stats.pop(watched.infohash, None)
         engine = self._engine
         if engine is not None:
-            engine.drop(infohash)
+            engine.drop(watched.infohash)
 
     # --- обработчики запросов -------------------------------------------
 

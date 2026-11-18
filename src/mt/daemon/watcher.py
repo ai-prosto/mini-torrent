@@ -11,6 +11,11 @@ Watcher подписывается на каталоги загрузок (inoti
 исчезновение того, что уже было: запись становится кандидатом на удаление,
 когда её файлы хоть раз виделись на диске, либо сразу — для записей со
 статусом ``done`` (их файлы заведомо существовали).
+
+Недоступный каталог загрузок — не удаление: если сам каталог ни разу
+не виделся существующим в этом процессе (несмонтированный внешний том,
+отвалившийся сетевой диск), его записи не трогаются. Иначе автозапуск
+демона после отключения диска необратимо стирал бы их из ``state.json``.
 """
 
 from __future__ import annotations
@@ -33,12 +38,17 @@ DEFAULT_POLL_INTERVAL = 5.0
 
 @dataclass(frozen=True)
 class WatchedEntry:
-    """Срез записи состояния — только то, что нужно для проверки диска."""
+    """Срез записи состояния — только то, что нужно для проверки диска.
+
+    ``added_at`` различает повторное добавление того же инфохэша: демон
+    не удаляет свежую запись по устаревшему срезу watcher.
+    """
 
     infohash: str
     download_dir: str
     files: list[str] = field(default_factory=list)
     done: bool = False
+    added_at: str = ""
 
 
 class _KickHandler(FileSystemEventHandler):
@@ -64,15 +74,22 @@ class Watcher:
     def __init__(
         self,
         entries: Callable[[], list[WatchedEntry]],
-        on_all_missing: Callable[[str], None],
+        on_all_missing: Callable[[WatchedEntry], None],
         poll_interval: float | None = None,
     ) -> None:
         if poll_interval is None:
-            poll_interval = float(os.environ.get("MT_WATCH_INTERVAL", DEFAULT_POLL_INTERVAL))
+            # кривое значение не должно валить демона, ноль — крутить ядро
+            try:
+                poll_interval = float(os.environ.get("MT_WATCH_INTERVAL", DEFAULT_POLL_INTERVAL))
+            except ValueError:
+                poll_interval = DEFAULT_POLL_INTERVAL
+            if poll_interval <= 0:
+                poll_interval = DEFAULT_POLL_INTERVAL
         self._entries = entries
         self._on_all_missing = on_all_missing
         self._interval = poll_interval
         self._seen: set[str] = set()
+        self._seen_dirs: set[str] = set()
         self._kick = threading.Event()
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
@@ -124,18 +141,26 @@ class Watcher:
     def check_now(self) -> None:
         """Один проход: обновить подписки и найти записи без файлов на диске."""
         entries = self._entries()
-        self._sync_watches({entry.download_dir for entry in entries})
+        directories = {entry.download_dir for entry in entries}
+        self._sync_watches(directories)
         live = {entry.infohash for entry in entries}
         self._seen &= live  # записи, удалённые другим путём, не копятся
+        self._seen_dirs &= directories
         for entry in entries:
             if not entry.files:
                 continue  # magnet без метаданных: проверять нечего
             root = Path(entry.download_dir)
+            if root.is_dir():
+                self._seen_dirs.add(entry.download_dir)
+            elif entry.download_dir not in self._seen_dirs:
+                continue  # каталог недоступен (том не смонтирован?) — не пропажа
             if any((root / name).exists() for name in entry.files):
                 self._seen.add(entry.infohash)
             elif entry.done or entry.infohash in self._seen:
+                # сперва колбэк: если он упал (state.json не записался),
+                # запись остаётся кандидатом и попытка повторится
+                self._on_all_missing(entry)
                 self._seen.discard(entry.infohash)
-                self._on_all_missing(entry.infohash)
 
     def _sync_watches(self, directories: set[str]) -> None:
         """Подписки следуют за каталогами записей: download_dir меняется (D-05)."""

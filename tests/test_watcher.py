@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -169,9 +170,9 @@ class Recorder:
     def list_entries(self) -> list[watcher_mod.WatchedEntry]:
         return list(self.entries)
 
-    def remove(self, infohash: str) -> None:
-        self.removed.append(infohash)
-        self.entries = [entry for entry in self.entries if entry.infohash != infohash]
+    def remove(self, watched: watcher_mod.WatchedEntry) -> None:
+        self.removed.append(watched.infohash)
+        self.entries = [entry for entry in self.entries if entry.infohash != watched.infohash]
 
 
 def make_watcher(recorder: Recorder, poll_interval: float = 60.0) -> watcher_mod.Watcher:
@@ -270,15 +271,130 @@ def test_watcher_thread_reacts_to_deletion(tmp_path: Path) -> None:
         watcher.stop()
 
 
-def test_watcher_missing_download_dir(tmp_path: Path) -> None:
-    """Снесли весь каталог загрузок: подписаться не на что, опрос всё равно
-    замечает пропажу."""
+def test_watcher_deleted_download_dir_removes_entry(tmp_path: Path) -> None:
+    """Снесли весь каталог загрузок на глазах watcher — это пропажа файлов."""
+    root = tmp_path / "dl"
+    root.mkdir()
+    (root / "x.bin").write_bytes(b"x")
+    entry = watcher_mod.WatchedEntry("1" * 40, str(root), files=["x.bin"], done=True)
+    recorder = Recorder([entry])
+    watcher = make_watcher(recorder)
+    watcher.check_now()  # каталог и файл увидены живыми
+    shutil.rmtree(root)
+    watcher.check_now()
+    assert recorder.removed == ["1" * 40]
+
+
+def test_watcher_unavailable_download_dir_is_not_deletion(tmp_path: Path) -> None:
+    """Каталога загрузок не видно с самого старта (несмонтированный внешний
+    том) — записи не трогаются: недоступность не считается удалением."""
     gone_dir = tmp_path / "nope"
-    entry = watcher_mod.WatchedEntry("1" * 40, str(gone_dir), files=["x.bin"], done=True)
+    entry = watcher_mod.WatchedEntry("2" * 40, str(gone_dir), files=["x.bin"], done=True)
     recorder = Recorder([entry])
     watcher = make_watcher(recorder)
     watcher.start()  # подписка на несуществующий каталог делу не мешает
     try:
-        wait_until(lambda: recorder.removed == ["1" * 40], timeout=10)
+        watcher.check_now()
+        watcher.check_now()
+        assert recorder.removed == []
     finally:
         watcher.stop()
+
+
+def test_watcher_retries_after_failed_callback(tmp_path: Path) -> None:
+    """Колбэк упал (state.json не записался) — запись остаётся кандидатом,
+    и на следующем проходе удаление повторяется."""
+    payload = tmp_path / "flaky.bin"
+    payload.write_bytes(b"x")
+    entry = watcher_mod.WatchedEntry("3" * 40, str(tmp_path), files=["flaky.bin"])
+    recorder = Recorder([entry])
+    attempts: list[str] = []
+
+    def flaky_remove(watched: watcher_mod.WatchedEntry) -> None:
+        attempts.append(watched.infohash)
+        if len(attempts) == 1:
+            raise OSError("диск только для чтения")
+        recorder.remove(watched)
+
+    watcher = watcher_mod.Watcher(recorder.list_entries, flaky_remove, poll_interval=60.0)
+    watcher.check_now()  # файл увиден
+    payload.unlink()
+    with pytest.raises(OSError):  # в потоке это ловит и логирует _loop
+        watcher.check_now()
+    watcher.check_now()
+    assert attempts == ["3" * 40, "3" * 40]
+    assert recorder.removed == ["3" * 40]
+
+
+def test_watcher_falls_back_to_polling_without_observer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Подписка на fs-события не поднялась (inotify исчерпан) — опрос
+    в потоке всё равно замечает пропажу."""
+
+    def broken_observer() -> None:
+        raise OSError("inotify instance limit reached")
+
+    monkeypatch.setattr(watcher_mod, "Observer", broken_observer)
+    payload = tmp_path / "pollonly.bin"
+    payload.write_bytes(b"x")
+    entry = watcher_mod.WatchedEntry("4" * 40, str(tmp_path), files=["pollonly.bin"], done=True)
+    recorder = Recorder([entry])
+    watcher = make_watcher(recorder, poll_interval=0.1)
+    watcher.start()
+    try:
+        assert watcher._observer is None
+        payload.unlink()
+        wait_until(lambda: recorder.removed == ["4" * 40], timeout=10)
+    finally:
+        watcher.stop()
+
+
+def test_watcher_watch_follows_download_dir(tmp_path: Path) -> None:
+    """D-05: download_dir записи сменился — старая подписка снимается,
+    новая ставится."""
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    recorder = Recorder([watcher_mod.WatchedEntry("5" * 40, str(old_dir), files=[])])
+    watcher = make_watcher(recorder)
+    watcher.start()
+    try:
+        # первый проход делает сам поток; дальше он спит дольше теста
+        wait_until(lambda: set(watcher._watches) == {str(old_dir)}, timeout=5)
+        recorder.entries = [watcher_mod.WatchedEntry("5" * 40, str(new_dir), files=[])]
+        watcher.check_now()
+        assert set(watcher._watches) == {str(new_dir)}
+    finally:
+        watcher.stop()
+
+
+def test_watch_interval_env_garbage_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Кривой или нулевой MT_WATCH_INTERVAL не валит демона и не крутит ядро."""
+    for raw in ("мусор", "0", "-1"):
+        monkeypatch.setenv("MT_WATCH_INTERVAL", raw)
+        watcher = watcher_mod.Watcher(list, lambda _watched: None)
+        assert watcher._interval == watcher_mod.DEFAULT_POLL_INTERVAL
+
+
+def test_remove_missing_skips_readded_entry(
+    daemon: Daemon, client: Client, tmp_path: Path
+) -> None:
+    """Гонка watcher/add: торрент удалили и добавили заново тем же инфохэшем —
+    устаревший срез watcher не удаляет свежую запись."""
+    made = make_torrent(tmp_path, "readd.bin", size=8 * PIECE_SIZE)
+    assert client.add(str(made.torrent_path))["ok"] is True
+
+    (actual,) = daemon._watched_entries()
+    stale = watcher_mod.WatchedEntry(
+        infohash=actual.infohash,
+        download_dir=actual.download_dir,
+        files=list(actual.files),
+        added_at="2000-01-01T00:00:00+00:00",  # added_at прежней записи
+    )
+    daemon._remove_missing(stale)
+    assert [entry["infohash"] for entry in list_entries(client)] == [made.infohash]
+
+    daemon._remove_missing(actual)  # точный срез удаляет как обычно
+    assert list_entries(client) == []
