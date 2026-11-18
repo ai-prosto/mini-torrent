@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from mt import cli, paths
+from mt.daemon import spawn
 from mt.daemon.daemon import Daemon
 
 MAGNET = "magnet:?xt=urn:btih:" + "d" * 40 + "&dn=mint.iso"
@@ -23,9 +24,12 @@ def test_add_prints_name_and_exits_zero(
     assert captured.err == ""
 
 
-def test_add_without_daemon_fails_with_message(
-    state_home: Path, capsys: pytest.CaptureFixture[str]
+def test_add_without_daemon_and_failed_spawn_fails(
+    state_home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Демон не поднялся за отведённое время — код 1 и сообщение, не зависание."""
+    monkeypatch.setattr(spawn, "spawn_daemon", lambda: None)  # демон «не стартует»
+    monkeypatch.setattr(spawn, "SPAWN_TIMEOUT", 0.2)
     code = cli.main(["add", MAGNET])
     captured = capsys.readouterr()
     assert code == 1

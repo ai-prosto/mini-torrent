@@ -5,14 +5,19 @@
 ``add``, поэтому правка ``download_dir`` действует на новые закачки без
 перезапуска демона (D-05). Тикер раз в 500 мс собирает срез прогресса для
 снапшотов; на 100% запись переходит в ``done``, торрент выбрасывается из
-движка, и соединения с пирами закрываются (D-10).
+движка, и соединения с пирами закрываются (D-10). Watcher следит за диском
+(D-11): запись, у которой не осталось ни одного файла, удаляется из
+``state.json`` и из движка без перезапуска демона (BEH-15, BEH-16).
 """
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import fcntl
+import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -23,10 +28,12 @@ from pathlib import Path
 from typing import IO, Any
 from urllib.parse import parse_qs, urlsplit
 
+from mt import autostart, paths
 from mt import config as config_mod
-from mt import paths
 from mt.daemon import engine as engine_mod
+from mt.daemon import spawn as spawn_mod
 from mt.daemon import state as state_mod
+from mt.daemon import watcher as watcher_mod
 from mt.ipc import proto
 from mt.ipc.server import IPCServer
 
@@ -86,6 +93,7 @@ class Daemon:
         self._lock_file: IO[bytes] | None = None
         self._engine: engine_mod.Engine | None = None
         self._ticker: threading.Thread | None = None
+        self._watcher: watcher_mod.Watcher | None = None
         self._server = IPCServer(
             paths.socket_path(),
             handlers={proto.OP_ADD: self._handle_add, proto.OP_LIST: self._handle_list},
@@ -99,16 +107,26 @@ class Daemon:
         return self._engine
 
     def start(self) -> None:
-        """Каталог состояния (0700), flock, движок, сокет и тикер прогресса."""
+        """Каталог состояния (0700), flock, движок, возобновление, сокет, тикер."""
         paths.ensure_state_dir()
         self._acquire_lock()
         self._engine = engine_mod.Engine(listen_port=self._listen_port_from_config())
+        self._resume_pending()
         self._server.start()
+        # после сокета: клиенты не ждут systemctl/loginctl (у _run есть таймаут,
+        # но и он съел бы 5-секундный бюджет spawn.connect)
+        self._register_autostart()
         self._ticker = threading.Thread(target=self._tick_loop, name="mt-ticker", daemon=True)
         self._ticker.start()
+        self._watcher = watcher_mod.Watcher(self._watched_entries, self._remove_missing)
+        self._watcher.start()
 
     def stop(self) -> None:
         self._stopping.set()
+        # watcher гасится до движка: его колбэк зовёт engine.drop
+        watcher, self._watcher = self._watcher, None
+        if watcher is not None:
+            watcher.stop()
         ticker, self._ticker = self._ticker, None
         if ticker is not None:
             ticker.join(timeout=5)
@@ -129,16 +147,21 @@ class Daemon:
             return None
 
     def run_forever(self) -> None:
-        """Блокирующий цикл роли демона; завершается по stop()."""
+        """Блокирующий цикл роли демона; завершается по stop()/request_stop()."""
         try:
             while not self._stopping.wait(timeout=1.0):
                 pass
         finally:
             self.stop()
 
+    def request_stop(self) -> None:
+        """Просит демона остановиться; run_forever() завершится сам."""
+        self._stopping.set()
+
     def _acquire_lock(self) -> None:
         # файл живёт, пока демон держит flock — контекстный менеджер не подходит
-        lock_file = open(paths.lock_path(), "ab")  # noqa: SIM115
+        fd = os.open(paths.lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+        lock_file = os.fdopen(fd, "r+b")
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -146,7 +169,49 @@ class Daemon:
             if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
                 raise AlreadyRunning("демон уже запущен (mt.lock занят)") from exc
             raise DaemonError(f"не удалось взять {paths.lock_path()}: {exc}") from exc
+        # pid в lock-файле: тестам и пользователю видно, кого именно убивать
+        lock_file.truncate(0)
+        lock_file.write(str(os.getpid()).encode("ascii"))
+        lock_file.flush()
         self._lock_file = lock_file
+
+    def _resume_pending(self) -> None:
+        """D-07: записи ``downloading`` поднимаются сами на каждом старте.
+
+        Торрент заводится из сохранённой копии metainfo (D-06), а когда её
+        нет (magnet, не успевший получить метаданные) — из исходной ссылки.
+        Движок перепроверяет куски на диске, поэтому докачка начинается
+        с прежнего процента, не ниже (BEH-09, BEH-11).
+        """
+        for entry in self._entries:
+            if entry.status != state_mod.STATUS_DOWNLOADING:
+                continue
+            meta = paths.meta_dir() / f"{entry.infohash}.torrent"
+            # битая копия metainfo (SIGKILL мог оборвать её запись) не должна
+            # блокировать возобновление навсегда — откат к исходной ссылке
+            sources = [str(meta)] if meta.is_file() else []
+            if entry.source not in sources:
+                sources.append(entry.source)
+            failure: Exception | None = None
+            for source in sources:
+                # RuntimeError приходит из libtorrent; без перехвата одна битая
+                # запись валила бы старт демона (с Restart=on-failure — циклично)
+                try:
+                    self.engine.add(source, Path(entry.download_dir))
+                    failure = None
+                    break
+                except (engine_mod.EngineError, RuntimeError) as exc:
+                    failure = exc
+            if failure is not None:
+                print(f"mt: не удалось возобновить «{entry.name}»: {failure}", file=sys.stderr)
+
+    @staticmethod
+    def _register_autostart() -> None:
+        """D-08: регистрация автозапуска ОС; неудача — предупреждение, не отказ."""
+        try:
+            autostart.install(spawn_mod.daemon_command())
+        except autostart.AutostartError as exc:
+            print(f"mt: автозапуск не настроен: {exc}", file=sys.stderr)
 
     # --- цикл прогресса ---------------------------------------------------
 
@@ -166,8 +231,10 @@ class Daemon:
         completed: list[str] = []
         with self._lock:
             # срез копится, а не замещается: отданные байты завершённых
-            # закачек остаются видны и после drop
-            self._stats.update(stats)
+            # закачек остаются видны и после drop; фильтр по живым записям —
+            # watcher мог удалить запись между poll() и взятием замка
+            known = {entry.infohash for entry in self._entries}
+            self._stats.update({ih: st for ih, st in stats.items() if ih in known})
             changed = False
             for entry in self._entries:
                 live = stats.get(entry.infohash)
@@ -189,6 +256,47 @@ class Daemon:
         for infohash in completed:
             # BEH-17: на 100% торрент выбрасывается, соединения закрываются
             engine.drop(infohash)
+
+    # --- слежение за диском (D-11) ----------------------------------------
+
+    def _watched_entries(self) -> list[watcher_mod.WatchedEntry]:
+        """Срез записей для watcher: пути файлов и признак ``done``."""
+        with self._lock:
+            return [
+                watcher_mod.WatchedEntry(
+                    infohash=entry.infohash,
+                    download_dir=entry.download_dir,
+                    files=list(entry.files),
+                    done=entry.status == state_mod.STATUS_DONE,
+                    added_at=entry.added_at,
+                )
+                for entry in self._entries
+            ]
+
+    def _remove_missing(self, watched: watcher_mod.WatchedEntry) -> None:
+        """BEH-15, BEH-16: все файлы записи пропали с диска.
+
+        Запись удаляется из ``state.json`` и из памяти, ещё активный торрент
+        выбрасывается из движка — всё на живом демоне, следующий снапшот
+        уходит в TUI уже без неё. Сверка и по ``added_at``: срез watcher мог
+        устареть, пока тот же торрент удалили и добавили заново — свежую
+        запись трогать нельзя.
+        """
+        with self._lock:
+            kept = [
+                entry
+                for entry in self._entries
+                if entry.infohash != watched.infohash or entry.added_at != watched.added_at
+            ]
+            if len(kept) == len(self._entries):
+                return
+            # сперва на диск: при ошибке записи память и state.json не расходятся
+            state_mod.save(self._state_path, kept)
+            self._entries[:] = kept
+            self._stats.pop(watched.infohash, None)
+        engine = self._engine
+        if engine is not None:
+            engine.drop(watched.infohash)
 
     # --- обработчики запросов -------------------------------------------
 
@@ -270,11 +378,21 @@ def run() -> int:
     """Точка входа подкоманды ``mt daemon``."""
     try:
         daemon = Daemon()
+    except (state_mod.StateError, OSError) as exc:
+        print(f"mt: {exc}", file=sys.stderr)
+        return 1
+    # launchd/systemd останавливают демона SIGTERM — завершаемся аккуратно;
+    # обработчик ставится до start(): проверка кусков при возобновлении может
+    # длиться долго, и SIGTERM в этом окне не должен ронять процесс жёстко
+    signal.signal(signal.SIGTERM, lambda *_: daemon.request_stop())
+    try:
         daemon.start()
     except AlreadyRunning:
         return 0  # запущенный демон — не ошибка: гонку выиграл другой процесс
     except (DaemonError, engine_mod.EngineError, state_mod.StateError, OSError) as exc:
         print(f"mt: {exc}", file=sys.stderr)
         return 1
-    daemon.run_forever()
+    # Ctrl-C в форграунде: stop() уже отработал в finally run_forever()
+    with contextlib.suppress(KeyboardInterrupt):
+        daemon.run_forever()
     return 0
