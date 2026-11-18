@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 from mt.daemon import state as state_mod
 from mt.tui.model import Model
 
@@ -31,7 +33,8 @@ def format_rate(bps: int) -> str:
         return f"{int(value)} Б/с"
     for unit in ("КиБ/с", "МиБ/с", "ГиБ/с"):
         value /= 1024
-        if value < 1024 or unit == "ГиБ/с":
+        # 1023.95..1024 печатается как «1024.0» — 13 знаков, шире RATE_W
+        if value < 1023.95 or unit == "ГиБ/с":
             return f"{value:.1f} {unit}"
     raise AssertionError("недостижимо")
 
@@ -73,6 +76,15 @@ def _name_width(width: int) -> int:
 
 
 def _fit(name: str, limit: int) -> str:
+    name = _sanitize(name)
     if len(name) <= limit:
         return name
     return name[: limit - 1] + "…"
+
+
+def _sanitize(name: str) -> str:
+    # имя приходит из чужих торрент-метаданных: ESC-последовательности
+    # могли бы переписать заголовок окна или испортить экран
+    return "".join(
+        "?" if unicodedata.category(char).startswith("C") else char for char in name
+    )

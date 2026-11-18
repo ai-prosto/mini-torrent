@@ -174,3 +174,19 @@ def test_long_name_truncated_to_width() -> None:
     row = view.render_rows(model, width=60)[0]
     assert "…" in row
     assert len(row) == 60
+
+
+def test_control_chars_in_name_not_rendered() -> None:
+    """ESC-последовательности из чужих метаданных не доходят до терминала."""
+    model = model_with(entry("evil\x1b]0;pwned\x07\x1b[2J.iso"))
+    row = view.render_rows(model, width=80)[0]
+    assert "\x1b" not in row
+    assert "\x07" not in row
+    assert "evil" in row
+
+
+def test_format_rate_unit_boundary_fits_column() -> None:
+    """1023.95..1024 КиБ/с не печатается как «1024.0 КиБ/с» (13 знаков)."""
+    assert view.format_rate(1048570) == "1.0 МиБ/с"
+    assert view.format_rate(1048500) == "1023.9 КиБ/с"
+    assert len(view.format_rate(1048500)) == view.RATE_W
